@@ -1,8 +1,6 @@
 #!/bin/sh
 # Build EyeRest.app into ~/Applications and keep it running in the menu bar via launchd.
-# Re-run to update or change timing.
-# Env (seconds): EYEREST_INTERVAL (default 1200), EYEREST_DURATION (20), EYEREST_LONG_EVERY (7200),
-#                EYEREST_LONG_DURATION (300), EYEREST_SNOOZE (300), EYEREST_IDLE_SKIP (3600).
+# Re-run to update. Timing, sound and language are set in the app (menu bar icon > Settings).
 set -eu
 
 LABEL=com.eyerest.reminder
@@ -28,9 +26,9 @@ cat > "$TMP/EyeRest.app/Contents/Info.plist" <<'INFO'
   <key>CFBundleExecutable</key><string>eyerest</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.1</string>
-  <key>CFBundleVersion</key><string>2</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>CFBundleShortVersionString</key><string>1.2</string>
+  <key>CFBundleVersion</key><string>3</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>
@@ -42,15 +40,7 @@ P="$TMP/agent.plist"
 plutil -create xml1 "$P"
 plutil -insert Label -string "$LABEL" "$P"
 plutil -insert ProgramArguments -array "$P"
-i=0
-add() { plutil -insert "ProgramArguments.$i" -string "$1" "$P"; i=$((i + 1)); }
-add "$BIN"
-add --interval;      add "${EYEREST_INTERVAL:-1200}"
-add --duration;      add "${EYEREST_DURATION:-20}"
-add --long-every;    add "${EYEREST_LONG_EVERY:-7200}"
-add --long-duration; add "${EYEREST_LONG_DURATION:-300}"
-add --snooze;        add "${EYEREST_SNOOZE:-300}"
-add --idle-skip;     add "${EYEREST_IDLE_SKIP:-3600}"
+plutil -insert ProgramArguments.0 -string "$BIN" "$P"
 plutil -insert AssociatedBundleIdentifiers -array "$P"
 plutil -insert AssociatedBundleIdentifiers.0 -string "$LABEL" "$P"
 plutil -insert RunAtLoad -bool YES "$P"
