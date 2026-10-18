@@ -8,7 +8,9 @@ A full-screen eye-rest reminder for macOS (the 20-20-20 rule), living in the men
 - **Snooze 5 min** or **Skip** (Esc) right on the overlay.
 - **Menu bar icon**: time to the next break, today's stats (done / skipped / snoozed), *Show now*, *Pause for an hour*, *Off until tomorrow*, *Resume*, *Quit until next login*.
 - Skipped automatically if there has been no mouse or keyboard input for over an hour.
-- Sleep or a locked screen counts as a break: the schedule restarts when you come back, and an absence of 5+ minutes counts as the long break.
+- Sleep or a locked screen counts as a break: a break on screen is dropped, the schedule restarts once the Mac is awake and unlocked, and an absence of 5+ minutes counts as the long break.
+- Plugging in or removing a display during a break re-covers every screen.
+- Installed as `~/Applications/EyeRest.app` with its own icon, so System Settings (Login Items) shows it by name and icon. Opening the app again while it runs does nothing.
 
 Requires the Swift compiler (Xcode or the Command Line Tools: `xcode-select --install`).
 
@@ -29,7 +31,7 @@ Also `EYEREST_SNOOZE` (default 300) and `EYEREST_IDLE_SKIP` (default 3600).
 Show a break right now from a terminal:
 
 ```sh
-"$HOME/Library/Application Support/EyeRest/eyerest" now
+"$HOME/Applications/EyeRest.app/Contents/MacOS/eyerest" now
 ```
 
 Stats are kept per day in `~/Library/Application Support/EyeRest/stats.json`.
@@ -39,6 +41,10 @@ Stats are kept per day in `~/Library/Application Support/EyeRest/stats.json`.
 ```sh
 ./uninstall.sh
 ```
+
+## Icon
+
+The icon is drawn in code: `swift icon/make-icon.swift icon` regenerates `icon/AppIcon.icns` and `icon/AppIcon.png`.
 
 ## Notes
 

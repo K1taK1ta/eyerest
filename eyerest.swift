@@ -25,6 +25,11 @@ if args.first == "now" {
     DistributedNotificationCenter.default().postNotificationName(showNowNotification, object: nil, userInfo: nil, deliverImmediately: true)
     exit(0)
 }
+// One instance at a time: launching the app again (e.g. from Finder) while it runs does nothing.
+if NSRunningApplication.runningApplications(withBundleIdentifier: "com.eyerest.reminder")
+    .contains(where: { $0.processIdentifier != getpid() }) {
+    exit(0)
+}
 while args.count >= 2 {
     let flag = args.removeFirst()
     guard let value = Double(args.removeFirst()), value > 0 else { continue }
@@ -101,14 +106,17 @@ final class Overlay: NSObject {
     private var windows: [OverlayWindow] = []
     private var counters: [NSTextField] = []
     private var timer: Timer?
+    private var screensObserver: NSObjectProtocol?
     private var left: Int
     private let long: Bool
+    private let tip: String
     private let onFinish: (Outcome) -> Void
     private var finished = false
 
     init(long: Bool, onFinish: @escaping (Outcome) -> Void) {
         self.long = long
         self.left = Int(long ? config.longDuration : config.duration)
+        self.tip = (long ? longTips : shortTips).randomElement()!
         self.onFinish = onFinish
         super.init()
     }
@@ -133,8 +141,11 @@ final class Overlay: NSObject {
         long ? String(format: "%d:%02d", left / 60, left % 60) : "\(left)"
     }
 
-    func show() {
-        let tip = (long ? longTips : shortTips).randomElement()!
+    // One window per display; rebuilt when displays are added, removed or change resolution.
+    private func buildWindows(alpha: CGFloat) {
+        windows.forEach { $0.orderOut(nil) }
+        windows = []
+        counters = []
         for screen in NSScreen.screens {
             let w = OverlayWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false
@@ -144,7 +155,7 @@ final class Overlay: NSObject {
                 ? NSColor(calibratedRed: 0.05, green: 0.10, blue: 0.07, alpha: 0.96)
                 : NSColor(calibratedRed: 0.04, green: 0.08, blue: 0.10, alpha: 0.94)
             w.isOpaque = false
-            w.alphaValue = 0
+            w.alphaValue = alpha
 
             let emoji = label(long ? "🚶" : "👀", size: 96, weight: .regular, alpha: 1)
             let title = label(long ? "Время для длинного перерыва" : "Отвернись от экрана", size: 64, weight: .semibold, alpha: 1)
@@ -177,12 +188,22 @@ final class Overlay: NSObject {
             windows.append(w)
             counters.append(counter)
         }
+        windows.first?.makeKey()
+    }
 
+    func show() {
+        buildWindows(alpha: 0)
         NSApp.activate(ignoringOtherApps: true)
         windows.first?.makeKey()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.6
             windows.forEach { $0.animator().alphaValue = 1 }
+        }
+        screensObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.finished else { return }
+            self.buildWindows(alpha: 1)
         }
 
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
@@ -199,10 +220,15 @@ final class Overlay: NSObject {
     @objc private func snoozeTapped() { finish(.snoozed) }
     @objc private func skipTapped() { finish(.skipped) }
 
-    private func finish(_ outcome: Outcome) {
-        guard !finished else { return }
+    private func stop() {
         finished = true
         timer?.invalidate()
+        if let screensObserver { NotificationCenter.default.removeObserver(screensObserver) }
+    }
+
+    private func finish(_ outcome: Outcome) {
+        guard !finished else { return }
+        stop()
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.4
             windows.forEach { $0.animator().alphaValue = 0 }
@@ -212,6 +238,14 @@ final class Overlay: NSObject {
             NSApp.hide(nil)  // hand focus back to the app the user was in
             self.onFinish(outcome)
         })
+    }
+
+    // Closes the overlay at once without reporting an outcome (the user went away mid-break).
+    func cancel() {
+        guard !finished else { return }
+        stop()
+        windows.forEach { $0.orderOut(nil) }
+        windows = []
     }
 }
 
@@ -229,6 +263,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var nextBreak = Date().addingTimeInterval(config.interval)
     private var lastLong = Date()
     private var pausedUntil: Date?
+    private var sleeping = false
+    private var locked = false
     private var awaySince: Date?
     private var overlay: Overlay?
 
@@ -263,11 +299,23 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
 
         let ws = NSWorkspace.shared.notificationCenter
-        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.wentAway() }
-        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in self?.cameBack() }
+        ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sleeping = true
+            self?.awayChanged()
+        }
+        ws.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sleeping = false
+            self?.awayChanged()
+        }
         let dn = DistributedNotificationCenter.default()
-        dn.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in self?.wentAway() }
-        dn.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in self?.cameBack() }
+        dn.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.locked = true
+            self?.awayChanged()
+        }
+        dn.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            self?.locked = false
+            self?.awayChanged()
+        }
         dn.addObserver(forName: showNowNotification, object: nil, queue: .main) { [weak self] _ in self?.showNow() }
     }
 
@@ -324,18 +372,21 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overlay.show()
     }
 
-    private func wentAway() {
-        if awaySince == nil { awaySince = Date() }
-    }
-
-    // Sleep or a locked screen is a break in itself: restart the schedule, and count a long enough
-    // absence as the long break.
-    private func cameBack() {
-        guard let since = awaySince else { return }
-        awaySince = nil
-        let now = Date()
-        if now.timeIntervalSince(since) >= config.longDuration { lastLong = now }
-        nextBreak = now.addingTimeInterval(config.interval)
+    // Sleep or a locked screen is a break in itself: a running overlay is dropped, the schedule
+    // restarts once the Mac is both awake and unlocked, and a long enough absence counts as the long break.
+    private func awayChanged() {
+        let away = sleeping || locked
+        if away {
+            guard awaySince == nil else { return }
+            awaySince = Date()
+            overlay?.cancel()
+            overlay = nil
+        } else if let since = awaySince {
+            awaySince = nil
+            let now = Date()
+            if now.timeIntervalSince(since) >= config.longDuration { lastLong = now }
+            nextBreak = now.addingTimeInterval(config.interval)
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -356,7 +407,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func showNow() {
-        guard overlay == nil else { return }
+        guard overlay == nil, awaySince == nil else { return }
         pausedUntil = nil
         updateIcon()
         startBreak()
@@ -368,7 +419,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func pauseToday() {
-        pausedUntil = Calendar.current.startOfDay(for: Date().addingTimeInterval(86400))
+        pausedUntil = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: 1, to: Date())!)
         updateIcon()
     }
 
