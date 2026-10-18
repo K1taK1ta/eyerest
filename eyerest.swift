@@ -150,6 +150,10 @@ final class Stats: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("stats.json")
         if let data = try? Data(contentsOf: url) { days = (try? JSONDecoder().decode([String: Day].self, from: data)) ?? [:] }
+        // "Today" and "last 7 days" move at midnight even when nothing is recorded.
+        NotificationCenter.default.addObserver(forName: .NSCalendarDayChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     var today: Day { days[dayKey.string(from: Date())] ?? Day() }
@@ -262,6 +266,7 @@ final class Overlay: NSObject {
     private var timer: Timer?
     private var screensObserver: NSObjectProtocol?
     private var left: Int
+    private var endsAt = Date()
     private let long: Bool
     private let tip: String
     private let onFinish: (Outcome) -> Void
@@ -371,15 +376,23 @@ final class Overlay: NSObject {
             self.buildWindows(alpha: 1)
         }
 
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        // Count down to a fixed end time, in common modes, so holding a button or a busy run loop
+        // can neither freeze nor stretch the break.
+        endsAt = Date().addingTimeInterval(TimeInterval(left))
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.left -= 1
-            self.counters.forEach { $0.stringValue = self.countdownText }
-            if self.left <= 0 {
+            let remaining = max(0, Int(self.endsAt.timeIntervalSinceNow.rounded(.up)))
+            if remaining != self.left {
+                self.left = remaining
+                self.counters.forEach { $0.stringValue = self.countdownText }
+            }
+            if remaining == 0 {
                 if self.prefs.soundAtEnd { playSound(self.prefs.soundName) }
                 self.finish(.done)
             }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     @objc private func snoozeTapped() { finish(.snoozed) }
@@ -423,6 +436,7 @@ final class Overlay: NSObject {
         stop()
         windows.forEach { $0.orderOut(nil) }
         windows = []
+        restoreFocus()
     }
 }
 
@@ -542,6 +556,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var awaySince: Date?
     private var overlay: Overlay?
     private var warning: Warning?
+    /// What the current warning was built for: break type, snooze label and language.
+    private var warningKey = ""
 
     private let clock: DateFormatter = {
         let f = DateFormatter()
@@ -579,7 +595,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         updateIcon()
 
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+        // Common modes: keep ticking while the status menu or a settings picker is open.
+        RunLoop.main.add(Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }, forMode: .common)
 
         let ws = NSWorkspace.shared.notificationCenter
         ws.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
@@ -645,7 +662,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hideWarning()
             guard now >= until else { return }
             pausedUntil = nil
-            nextBreak = now.addingTimeInterval(prefs.interval)
+            restartSchedule()
             updateIcon()
             return
         }
@@ -655,8 +672,8 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if now >= due {
             hideWarning()
             if idleSkip {
-                nextBreak = now.addingTimeInterval(prefs.interval)
                 if idle >= prefs.longDuration { lastLong = now }
+                restartSchedule()
                 return
             }
             startBreak()
@@ -666,11 +683,14 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let left = due.timeIntervalSince(now)
         guard prefs.warnBefore > 0, left <= prefs.warnBefore, !idleSkip else { return hideWarning() }
         let seconds = Int(left.rounded(.up))
-        if let warning {
+        let long = isLong(at: due)
+        let key = "\(long)|\(snoozeTitle)|\(uiLanguage)"
+        if let warning, key == warningKey {
             warning.update(secondsLeft: seconds)
             return
         }
-        let long = isLong(at: due)
+        hideWarning()
+        warningKey = key
         let warning = Warning(long: long, snoozeTitle: snoozeTitle, onSnooze: { [weak self] in
             self?.hideWarning()
             self?.breakEnded(.snoozed, long: long)
@@ -685,6 +705,13 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var snoozeTitle: String {
         prefs.snooze < 60 ? L("Отложить на \(Int(prefs.snooze)) с", "Snooze \(Int(prefs.snooze)) s")
             : L("Отложить на \(Int(prefs.snooze / 60)) мин", "Snooze \(Int(prefs.snooze / 60)) min")
+    }
+
+    /// Starts the schedule over from now. Both deadlines wait for the next short break, so an
+    /// already expired long-break deadline cannot fire straight away.
+    private func restartSchedule() {
+        nextBreak = Date().addingTimeInterval(prefs.interval)
+        notBefore = nextBreak
     }
 
     private func hideWarning() {
@@ -732,7 +759,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             awaySince = nil
             let now = Date()
             if now.timeIntervalSince(since) >= prefs.longDuration { lastLong = now }
-            nextBreak = now.addingTimeInterval(prefs.interval)
+            restartSchedule()
         }
     }
 
@@ -783,7 +810,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func resume() {
         pausedUntil = nil
-        nextBreak = Date().addingTimeInterval(prefs.interval)
+        restartSchedule()
         updateIcon()
     }
 

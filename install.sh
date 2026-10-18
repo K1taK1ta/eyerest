@@ -49,8 +49,14 @@ plutil -insert KeepAlive.SuccessfulExit -bool NO "$P"
 plutil -insert ProcessType -string Interactive "$P"
 plutil -lint "$P" >/dev/null
 
-# Everything is built and valid: now replace the running version.
+# Everything is built and valid: now replace the running version, including one opened by hand.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+stop_running() {
+  pkill -f "/EyeRest.app/Contents/MacOS/eyerest" 2>/dev/null || true
+  n=0
+  while pgrep -f "/EyeRest.app/Contents/MacOS/eyerest" >/dev/null && [ $n -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+}
+stop_running
 mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents"
 rm -rf "$APP"
 mv "$TMP/EyeRest.app" "$APP"
