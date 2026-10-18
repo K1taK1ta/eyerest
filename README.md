@@ -12,7 +12,7 @@ A full-screen eye-rest reminder for macOS, living in the menu bar. Russian and E
 - Skipped automatically after a stretch with no mouse or keyboard input (1 hour by default).
 - Sleep or a locked screen counts as a break: a break on screen is dropped, the schedule restarts once the Mac is awake and unlocked, and an absence as long as the long break counts as one.
 - Plugging in or removing a display during a break re-covers every screen.
-- Installed as `~/Applications/EyeRest.app` with its own icon, so System Settings (Login Items) shows it by name and icon. Opening the app again while it runs does nothing.
+- Installed as `~/Applications/EyeRest.app` with its own icon, so System Settings (Login Items) shows it by name and icon. Opening the app again (Finder, Spotlight) while it runs opens Settings.
 
 Requires macOS 14+ and the Swift compiler (Xcode or the Command Line Tools: `xcode-select --install`).
 

@@ -14,6 +14,7 @@ import SwiftUI
 
 let showNowNotification = Notification.Name("com.eyerest.shownow")
 let applyFlagsNotification = Notification.Name("com.eyerest.applyflags")
+let openSettingsNotification = Notification.Name("com.eyerest.opensettings")
 
 func secondsIdle() -> TimeInterval {
     CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
@@ -599,9 +600,17 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.awayChanged()
         }
         dn.addObserver(forName: showNowNotification, object: nil, queue: .main) { [weak self] _ in self?.showNow() }
+        dn.addObserver(forName: openSettingsNotification, object: nil, queue: .main) { [weak self] _ in self?.openSettings() }
         dn.addObserver(forName: applyFlagsNotification, object: nil, queue: .main) { [weak self] note in
             if let flags = note.userInfo?["flags"] as? [String] { self?.prefs.apply(flags: flags) }
         }
+    }
+
+    // Finder, Spotlight or `open` on the running app sends a reopen event rather than starting a
+    // second process: show the settings.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openSettings()
+        return false
     }
 
     private func item(_ action: Selector, key: String = "") -> NSMenuItem {
@@ -780,9 +789,15 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(prefs: prefs, stats: stats)))
+            // A grouped Form scrolls and has no height of its own, so size the window from the
+            // content's fitting size (capped to the screen) instead of letting it collapse to zero.
+            let content = NSHostingView(rootView: SettingsView(prefs: prefs, stats: stats))
+            var size = content.fittingSize
+            if let screen = NSScreen.main { size.height = min(size.height, screen.visibleFrame.height - 80) }
+            let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable],
+                             backing: .buffered, defer: false)
+            w.contentView = content
             w.title = "EyeRest"
-            w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
             w.center()
             settingsWindow = w
@@ -802,14 +817,14 @@ if arguments.first == "now" {
     exit(0)
 }
 #if !PREVIEW
-// One instance at a time: launching the app again (e.g. from Finder) while it runs does nothing,
-// except handing any settings flags to the running instance.
+// One instance at a time: launching the app again (e.g. from Finder) opens the running instance's
+// settings, or hands it the settings flags given on the command line.
 if NSRunningApplication.runningApplications(withBundleIdentifier: "com.eyerest.reminder")
     .contains(where: { $0.processIdentifier != getpid() }) {
-    if !arguments.isEmpty {
-        DistributedNotificationCenter.default().postNotificationName(
-            applyFlagsNotification, object: nil, userInfo: ["flags": arguments], deliverImmediately: true)
-    }
+    let flags = arguments.filter { !$0.hasPrefix("-psn_") }
+    DistributedNotificationCenter.default().postNotificationName(
+        flags.isEmpty ? openSettingsNotification : applyFlagsNotification, object: nil,
+        userInfo: flags.isEmpty ? nil : ["flags": flags], deliverImmediately: true)
     exit(0)
 }
 #endif
