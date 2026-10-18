@@ -5,9 +5,10 @@ A full-screen eye-rest reminder for macOS, living in the menu bar. Russian and E
 - **Short break** every 20 minutes: every display is covered for 20 seconds with a tip for the eyes.
 - **Long break** every 2 hours: 5 minutes, with a suggestion to stand up and move.
 - Sits above everything: other windows, full-screen apps, the Dock, the menu bar and notifications, on all Spaces and displays.
+- **Heads-up 10 seconds before a break**: a small panel at the top of the screen with a countdown, *Snooze* and *Skip*. It never takes focus, so you can keep typing.
 - **Snooze** or **Skip** (Esc) right on the overlay.
 - **Menu bar icon**: time to the next break, today's stats, *Show now*, *Pause for an hour*, *Off until tomorrow*, *Resume*, *Settings…*, *Quit until next login*.
-- **Settings window**: language (Русский / English), short and long break interval and length, long break on/off, snooze length, idle skip, sound at start / end and which sound, stats for today and the last 7 days. Changes apply at once.
+- **Settings window**: language (Русский / English), short and long break interval and length, long break on/off, heads-up time (off, 5, 10 or 30 s), snooze length, idle skip, sound at start / end and which sound, stats for today and the last 7 days. Changes apply at once.
 - Skipped automatically after a stretch with no mouse or keyboard input (1 hour by default).
 - Sleep or a locked screen counts as a break: a break on screen is dropped, the schedule restarts once the Mac is awake and unlocked, and an absence as long as the long break counts as one.
 - Plugging in or removing a display during a break re-covers every screen.
@@ -67,7 +68,7 @@ The icon is drawn in code: `swift icon/make-icon.swift icon` regenerates `icon/A
 
 ## Development
 
-`swiftc -D PREVIEW eyerest.swift -o /tmp/eyerest-preview && (cd /tmp && ./eyerest-preview)` renders the settings window in both languages to `settings-ru.png` and `settings-en.png`.
+`swiftc -D PREVIEW eyerest.swift -o /tmp/eyerest-preview && (cd /tmp && ./eyerest-preview)` renders the settings window and the heads-up panel in both languages to `settings-*.png` and `warning-*.png`.
 
 ## Notes
 

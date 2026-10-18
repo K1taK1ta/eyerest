@@ -81,6 +81,8 @@ final class Prefs: ObservableObject {
     @Published var snooze: Double { didSet { store.set(snooze, forKey: "snooze") } }
     /// Seconds without input after which a break is skipped; 0 means never skip.
     @Published var idleSkip: Double { didSet { store.set(idleSkip, forKey: "idleSkip") } }
+    /// Seconds before a break to show the heads-up panel; 0 turns it off.
+    @Published var warnBefore: Double { didSet { store.set(warnBefore, forKey: "warnBefore") } }
     @Published var soundAtStart: Bool { didSet { store.set(soundAtStart, forKey: "soundAtStart") } }
     @Published var soundAtEnd: Bool { didSet { store.set(soundAtEnd, forKey: "soundAtEnd") } }
     @Published var soundName: String { didSet { store.set(soundName, forKey: "soundName") } }
@@ -89,7 +91,7 @@ final class Prefs: ObservableObject {
     init() {
         store.register(defaults: [
             "interval": 1200.0, "duration": 20.0, "longEnabled": true, "longEvery": 7200.0, "longDuration": 300.0,
-            "snooze": 300.0, "idleSkip": 3600.0, "soundAtStart": false, "soundAtEnd": true, "soundName": "Glass",
+            "snooze": 300.0, "idleSkip": 3600.0, "warnBefore": 10.0, "soundAtStart": false, "soundAtEnd": true, "soundName": "Glass",
         ])
         interval = store.double(forKey: "interval")
         duration = store.double(forKey: "duration")
@@ -98,6 +100,7 @@ final class Prefs: ObservableObject {
         longDuration = store.double(forKey: "longDuration")
         snooze = store.double(forKey: "snooze")
         idleSkip = store.double(forKey: "idleSkip")
+        warnBefore = store.double(forKey: "warnBefore")
         soundAtStart = store.bool(forKey: "soundAtStart")
         soundAtEnd = store.bool(forKey: "soundAtEnd")
         soundName = store.string(forKey: "soundName") ?? "Glass"
@@ -118,6 +121,7 @@ final class Prefs: ObservableObject {
             case "--long-duration" where value > 0: longDuration = value
             case "--snooze" where value > 0: snooze = value
             case "--idle-skip": idleSkip = value
+            case "--warn": warnBefore = value
             default: break
             }
         }
@@ -212,6 +216,9 @@ struct SettingsView: View {
                 picker(L("Длительность", "Duration"), $prefs.longDuration, [120, 180, 300, 600, 900], minutes).disabled(!prefs.longEnabled)
             }
             Section(L("Поведение", "Behaviour")) {
+                picker(L("Предупреждать заранее", "Heads-up before a break"), $prefs.warnBefore, [0, 5, 10, 30]) {
+                    $0 == 0 ? L("не предупреждать", "off") : "\(Int($0)) \(L("с", "s"))"
+                }
                 picker(L("«Отложить» на", "Snooze for"), $prefs.snooze, [60, 180, 300, 600], minutes)
                 picker(L("Не показывать, если не трогал компьютер", "Skip breaks after no input for"), $prefs.idleSkip, [1800, 3600, 7200, 0]) {
                     $0 == 0 ? L("показывать всегда", "never skip") : minutes($0)
@@ -418,6 +425,96 @@ final class Overlay: NSObject {
     }
 }
 
+// MARK: - Heads-up panel
+
+/// A small panel at the top of the screen a few seconds before a break, with Snooze and Skip.
+/// It never takes focus, so typing carries on in the current app.
+final class Warning: NSObject {
+    let panel: NSPanel
+    private let text = NSTextField(labelWithString: "")
+    private let long: Bool
+    private let onSnooze: () -> Void
+    private let onSkip: () -> Void
+
+    init(long: Bool, snoozeTitle: String, onSnooze: @escaping () -> Void, onSkip: @escaping () -> Void) {
+        self.long = long
+        self.onSnooze = onSnooze
+        self.onSkip = onSkip
+        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        super.init()
+
+        let background = NSVisualEffectView()
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 14
+        background.layer?.masksToBounds = true
+
+        let emoji = NSTextField(labelWithString: long ? "🚶" : "👀")
+        emoji.font = .systemFont(ofSize: 22)
+        text.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
+        let snooze = NSButton(title: snoozeTitle, target: self, action: #selector(snoozeTapped))
+        let skip = NSButton(title: L("Пропустить", "Skip"), target: self, action: #selector(skipTapped))
+        [snooze, skip].forEach { $0.bezelStyle = .rounded }
+
+        let stack = NSStackView(views: [emoji, text, snooze, skip])
+        stack.spacing = 10
+        stack.setCustomSpacing(18, after: text)
+        stack.edgeInsets = NSEdgeInsets(top: 10, left: 16, bottom: 10, right: 12)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        background.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: background.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: background.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: background.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: background.bottomAnchor),
+        ])
+
+        panel.contentView = background
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+    }
+
+    func update(secondsLeft: Int) {
+        text.stringValue = long
+            ? L("Длинный перерыв через \(secondsLeft) с", "Long break in \(secondsLeft) s")
+            : L("Перерыв через \(secondsLeft) с", "Break in \(secondsLeft) s")
+    }
+
+    func show(secondsLeft: Int) {
+        update(secondsLeft: secondsLeft)
+        let size = panel.contentView!.fittingSize
+        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        if let area = screen?.visibleFrame {
+            panel.setFrame(NSRect(x: area.midX - size.width / 2, y: area.maxY - size.height - 10,
+                                  width: size.width, height: size.height), display: true)
+        }
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    func close() {
+        let panel = self.panel
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.2
+            panel.animator().alphaValue = 0
+        }, completionHandler: { panel.orderOut(nil) })
+    }
+
+    @objc private func snoozeTapped() { onSnooze() }
+    @objc private func skipTapped() { onSkip() }
+}
+
 // MARK: - Scheduler and menu bar
 
 final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -443,6 +540,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var locked = false
     private var awaySince: Date?
     private var overlay: Overlay?
+    private var warning: Warning?
 
     private let clock: DateFormatter = {
         let f = DateFormatter()
@@ -519,7 +617,10 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = image
     }
 
-    private var nextIsLong: Bool { prefs.longEnabled && Date().timeIntervalSince(lastLong) >= prefs.longEvery }
+    /// Whether a break starting at `date` is the long one.
+    private func isLong(at date: Date) -> Bool {
+        prefs.longEnabled && date.timeIntervalSince(lastLong) >= prefs.longEvery
+    }
 
     /// When the next break is due: the short-break deadline or the long-break one, whichever comes
     /// first, but never before a snooze ends.
@@ -529,45 +630,83 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func tick() {
-        guard overlay == nil, awaySince == nil else { return }
+        guard overlay == nil, awaySince == nil else { return hideWarning() }
         let now = Date()
         if let until = pausedUntil {
+            hideWarning()
             guard now >= until else { return }
             pausedUntil = nil
             nextBreak = now.addingTimeInterval(prefs.interval)
             updateIcon()
             return
         }
-        guard now >= nextDue else { return }
+        let due = nextDue
         let idle = secondsIdle()
-        if prefs.idleSkip > 0, idle > prefs.idleSkip {
-            nextBreak = now.addingTimeInterval(prefs.interval)
-            if idle >= prefs.longDuration { lastLong = now }
+        let idleSkip = prefs.idleSkip > 0 && idle > prefs.idleSkip
+        if now >= due {
+            hideWarning()
+            if idleSkip {
+                nextBreak = now.addingTimeInterval(prefs.interval)
+                if idle >= prefs.longDuration { lastLong = now }
+                return
+            }
+            startBreak()
             return
         }
-        startBreak()
+        // Heads-up panel for the last few seconds before the break.
+        let left = due.timeIntervalSince(now)
+        guard prefs.warnBefore > 0, left <= prefs.warnBefore, !idleSkip else { return hideWarning() }
+        let seconds = Int(left.rounded(.up))
+        if let warning {
+            warning.update(secondsLeft: seconds)
+            return
+        }
+        let long = isLong(at: due)
+        let warning = Warning(long: long, snoozeTitle: snoozeTitle, onSnooze: { [weak self] in
+            self?.hideWarning()
+            self?.breakEnded(.snoozed, long: long)
+        }, onSkip: { [weak self] in
+            self?.hideWarning()
+            self?.breakEnded(.skipped, long: long)
+        })
+        self.warning = warning
+        warning.show(secondsLeft: seconds)
+    }
+
+    private var snoozeTitle: String {
+        prefs.snooze < 60 ? L("Отложить на \(Int(prefs.snooze)) с", "Snooze \(Int(prefs.snooze)) s")
+            : L("Отложить на \(Int(prefs.snooze / 60)) мин", "Snooze \(Int(prefs.snooze / 60)) min")
+    }
+
+    private func hideWarning() {
+        warning?.close()
+        warning = nil
     }
 
     private func startBreak() {
-        let long = nextIsLong
+        hideWarning()
+        let long = isLong(at: Date())
         let overlay = Overlay(long: long, prefs: prefs) { [weak self] outcome in
-            guard let self else { return }
-            self.overlay = nil
-            let now = Date()
-            switch outcome {
-            case .snoozed:
-                self.stats.record(\.snoozed)
-                self.nextBreak = now.addingTimeInterval(self.prefs.snooze)
-                self.notBefore = self.nextBreak
-            case .done, .skipped:
-                self.stats.record(outcome == .done ? \.done : \.skipped)
-                self.nextBreak = now.addingTimeInterval(self.prefs.interval)
-                self.notBefore = now
-                if long { self.lastLong = now }
-            }
+            self?.overlay = nil
+            self?.breakEnded(outcome, long: long)
         }
         self.overlay = overlay
         overlay.show()
+    }
+
+    private func breakEnded(_ outcome: Overlay.Outcome, long: Bool) {
+        let now = Date()
+        switch outcome {
+        case .snoozed:
+            stats.record(\.snoozed)
+            nextBreak = now.addingTimeInterval(prefs.snooze)
+            notBefore = nextBreak
+        case .done, .skipped:
+            stats.record(outcome == .done ? \.done : \.skipped)
+            nextBreak = now.addingTimeInterval(prefs.interval)
+            notBefore = now
+            if long { lastLong = now }
+        }
     }
 
     // Sleep or a locked screen is a break in itself: a running overlay is dropped, the schedule
@@ -577,6 +716,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if away {
             guard awaySince == nil else { return }
             awaySince = Date()
+            hideWarning()
             overlay?.cancel()
             overlay = nil
         } else if let since = awaySince {
@@ -595,7 +735,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 : L("Выключено до завтра", "Off until tomorrow")
         } else {
             let minutes = max(0, Int(nextDue.timeIntervalSince(now) / 60 + 0.5))
-            statusLine.title = nextIsLong
+            statusLine.title = isLong(at: nextDue)
                 ? L("Длинный перерыв через \(minutes) мин", "Long break in \(minutes) min")
                 : L("Следующий перерыв через \(minutes) мин", "Next break in \(minutes) min")
         }
@@ -621,11 +761,13 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func pauseHour() {
+        hideWarning()
         pausedUntil = Date().addingTimeInterval(3600)
         updateIcon()
     }
 
     @objc private func pauseToday() {
+        hideWarning()
         pausedUntil = Calendar.current.startOfDay(for: Calendar.current.date(byAdding: .day, value: 1, to: Date())!)
         updateIcon()
     }
@@ -688,6 +830,15 @@ for language in ["ru", "en"] {
     let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
     view.cacheDisplay(in: view.bounds, to: rep)
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "settings-\(language).png"))
+
+    let warning = Warning(long: false, snoozeTitle: L("Отложить на 5 мин", "Snooze 5 min"), onSnooze: {}, onSkip: {})
+    warning.update(secondsLeft: 10)
+    let content = warning.panel.contentView!
+    content.frame = NSRect(origin: .zero, size: content.fittingSize)
+    content.layoutSubtreeIfNeeded()
+    let warningRep = content.bitmapImageRepForCachingDisplay(in: content.bounds)!
+    content.cacheDisplay(in: content.bounds, to: warningRep)
+    try! warningRep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: "warning-\(language).png"))
 }
 exit(0)
 #endif
