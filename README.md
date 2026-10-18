@@ -73,3 +73,7 @@ The icon is drawn in code: `swift icon/make-icon.swift icon` regenerates `icon/A
 ## Notes
 
 - If you share your whole screen in a call, viewers will see the overlay too.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
